@@ -1,0 +1,114 @@
+name: Build voidImageViewer
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: windows-2019  # 使用 Windows 2019 编译环境
+    
+    strategy:
+      matrix:
+        platform: [Win32, x64]
+        configuration: [Release]
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    
+    - name: 设置 MSBuild
+      uses: microsoft/setup-msbuild@v1.1
+      with:
+        vs-version: '16.0'  # Visual Studio 2019
+    
+    - name: 还原 NuGet 包（如果需要）
+      working-directory: ${{github.workspace}}
+      run: |
+        if (Test-Path "vs2019/voidImageViewer.sln") {
+          nuget restore vs2019/voidImageViewer.sln
+        }
+    
+    - name: 编译项目
+      working-directory: ${{github.workspace}}
+      run: |
+        $slnFile = "vs2019/voidImageViewer.sln"
+        if (-not (Test-Path $slnFile)) {
+          $slnFile = "vs2005/voidImageViewer.sln"
+        }
+        msbuild $slnFile /m /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}}
+    
+    - name: 收集编译输出
+      run: |
+        New-Item -ItemType Directory -Force -Path output
+        $platform = "${{matrix.platform}}"
+        $config = "${{matrix.configuration}}"
+        
+        # 查找编译输出
+        $exePath = "vs2019/$platform/$config/voidImageViewer.exe"
+        if (-not (Test-Path $exePath)) {
+          $exePath = "vs2005/$config/voidImageViewer.exe"
+        }
+        
+        if (Test-Path $exePath) {
+          Copy-Item $exePath output/
+          
+          # 复制依赖的 DLL
+          $binDir = Split-Path $exePath
+          Get-ChildItem $binDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName output/
+          }
+        }
+    
+    - name: 上传编译产物
+      uses: actions/upload-artifact@v3
+      with:
+        name: voidImageViewer-${{matrix.platform}}-${{matrix.configuration}}
+        path: output/
+        if-no-files-found: error
+    
+  # 可选：制作安装包
+  package:
+    needs: build
+    runs-on: windows-2019
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+    
+    - name: 下载编译产物 (x86)
+      uses: actions/download-artifact@v3
+      with:
+        name: voidImageViewer-Win32-Release
+        path: build/x86
+    
+    - name: 下载编译产物 (x64)
+      uses: actions/download-artifact@v3
+      with:
+        name: voidImageViewer-x64-Release
+        path: build/x64
+    
+    - name: 安装 NSIS
+      run: |
+        choco install nsis -y
+    
+    - name: 制作安装包
+      working-directory: ${{github.workspace}}
+      run: |
+        if (Test-Path "nsis/installer.nsi") {
+          cd nsis
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+        }
+    
+    - name: 上传安装包
+      uses: actions/upload-artifact@v3
+      with:
+        name: voidImageViewer-Installer
+        path: nsis/*.exe
+        if-no-files-found: warn
