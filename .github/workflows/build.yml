@@ -32,7 +32,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Prefer modern VS solutions if present
           $candidates = @(
             "vs2026\voidImageViewer.sln",
             "vs2019\voidImageViewer.sln",
@@ -42,11 +41,9 @@ jobs:
           $sln = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
           if (-not $sln) {
-            # fallback: pick any .sln but avoid legacy vs2005
             $found = Get-ChildItem -Recurse -Filter *.sln |
               Where-Object { $_.FullName -notmatch '\\vs2005\\' } |
               Select-Object -First 1
-
             if ($found) { $sln = $found.FullName }
           }
 
@@ -55,10 +52,26 @@ jobs:
           Write-Host "Using solution: $sln"
           "sln=$sln" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-          # Diagnostics: confirm file is readable and not empty/garbled
           Get-Item $sln | Format-List FullName,Length,LastWriteTime
           Write-Host "First 10 lines of solution:"
           Get-Content $sln -TotalCount 10
+
+      - name: Retarget toolset v145 -> v143 (CI)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -Include *.vcxproj,*.props,*.targets
+          $hit = 0
+          foreach ($f in $files) {
+            $text = Get-Content $f.FullName -Raw
+            if ($text -match '<PlatformToolset>\s*v145\s*</PlatformToolset>') {
+              $new = $text -replace '<PlatformToolset>\s*v145\s*</PlatformToolset>', '<PlatformToolset>v143</PlatformToolset>'
+              Set-Content -Path $f.FullName -Value $new -Encoding utf8
+              Write-Host "Retargeted: $($f.FullName)"
+              $hit++
+            }
+          }
+          if ($hit -eq 0) { Write-Host "No v145 toolset references found to retarget." }
 
       - name: Build x64 Release
         run: msbuild "${{ steps.locate.outputs.sln }}" /m /p:Configuration=Release /p:Platform=x64
