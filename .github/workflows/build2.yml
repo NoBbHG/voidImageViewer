@@ -1,0 +1,60 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Locate solution
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
+          if (-not $sln) { throw "No .sln found" }
+          "SLN=$($sln.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using solution: $($sln.FullName)"
+
+      - name: Build x64 Release
+        run: msbuild "$env:SLN" /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Build Win32 Release
+        run: msbuild "$env:SLN" /m /p:Configuration=Release /p:Platform=Win32
+
+      # 如果仓库里确实有 nsis\installer.nsi，就会生成安装包；没有就跳过
+      - name: Build installer (NSIS)
+        shell: pwsh
+        run: |
+          $nsi = Join-Path $pwd "nsis\installer.nsi"
+          if (Test-Path $nsi) {
+            & makensis $nsi
+          } else {
+            Write-Host "NSIS script not found at $nsi, skipping installer step."
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voidImageViewer-build
+          path: |
+            **\Release\*.exe
+            **\Release\*.dll
+            **\*.exe
+            **\*.zip
+            **\*.msi
