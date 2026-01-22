@@ -1,4 +1,4 @@
-name: Build voidImageViewer (with language patch)
+name: Build voidImageViewer (Patch Source)
 
 on:
   workflow_dispatch:
@@ -25,89 +25,62 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: 创建 language.c 补丁文件
+      - name: 修补源代码 - 移除 language 调用
         shell: pwsh
         run: |
-          Write-Host "创建 language.c 补丁文件以解决链接错误..."
+          Write-Host "修补 viv.c 以移除 language 函数调用..."
           
-          $languageC = @'
-          // Temporary language.c stub for GitHub Actions build
-          // This file provides empty implementations to resolve linker errors
+          $vivPath = "src\viv.c"
           
-          #include <windows.h>
-          
-          // Stub: Return empty string for all language requests
-          const wchar_t* language_get_string(int string_id)
-          {
-              return L"";
+          if (-not (Test-Path $vivPath)) {
+              throw "找不到 src\viv.c"
           }
           
-          // Stub: Do nothing for language initialization
-          void language_init(void)
-          {
-              // Language support disabled in this build
-          }
-          '@
+          # 读取源文件
+          $content = Get-Content $vivPath -Raw -Encoding UTF8
           
-          $srcDir = "src"
-          if (-not (Test-Path $srcDir)) {
-              throw "src 目录不存在"
-          }
+          # 备份原文件
+          Copy-Item $vivPath "$vivPath.backup"
+          Write-Host "已备份原文件"
           
-          $languagePath = Join-Path $srcDir "language.c"
-          Set-Content -Path $languagePath -Value $languageC -Encoding UTF8
-          Write-Host "已创建: $languagePath"
+          # 替换 language_init() 调用为注释
+          $content = $content -replace 'language_init\s*\(\s*\)\s*;', '// language_init(); // Disabled for GitHub Actions build'
           
-          # 同时创建 language.h 头文件
-          $languageH = @'
-          // language.h - stub header
-          #ifndef LANGUAGE_H
-          #define LANGUAGE_H
+          # 替换所有 language_get_string 调用为空字符串 L""
+          # 匹配模式: language_get_string(任何内容)
+          $content = $content -replace 'language_get_string\s*\([^)]+\)', 'L""'
           
-          const wchar_t* language_get_string(int string_id);
-          void language_init(void);
+          # 注释掉可能的 language.h 引用
+          $content = $content -replace '#include\s+[<"]language\.h[>"]', '// #include "language.h" // Disabled'
           
-          #endif
-          '@
+          # 保存修改后的文件
+          Set-Content -Path $vivPath -Value $content -Encoding UTF8
           
-          $headerPath = Join-Path $srcDir "language.h"
-          Set-Content -Path $headerPath -Value $languageH -Encoding UTF8
-          Write-Host "已创建: $headerPath"
+          Write-Host "源代码修补完成"
+          Write-Host "修改统计:"
+          Write-Host "  - 已注释 language_init() 调用"
+          Write-Host "  - 已替换 language_get_string() 为空字符串"
+          Write-Host "  - 已注释 language.h 引用"
 
-      - name: 将 language.c 添加到项目
+      - name: 检查修补结果
         shell: pwsh
         run: |
-          Write-Host "将 language.c 添加到 vcxproj..."
+          Write-Host "检查修补后的代码..."
           
-          # 查找 .vcxproj 文件
-          $vcxproj = Get-ChildItem -Recurse -Filter "voidImageViewer.vcxproj" | Select-Object -First 1
+          $vivPath = "src\viv.c"
+          $content = Get-Content $vivPath -Raw
           
-          if (-not $vcxproj) {
-              Write-Host "警告: 未找到 vcxproj 文件，跳过此步骤"
-              exit 0
-          }
-          
-          Write-Host "找到项目文件: $($vcxproj.FullName)"
-          
-          # 读取项目文件
-          $content = Get-Content $vcxproj.FullName -Raw -Encoding UTF8
-          
-          # 检查是否已包含 language.c
-          if ($content -match 'language\.c') {
-              Write-Host "language.c 已在项目中"
-              exit 0
-          }
-          
-          # 查找 <ClCompile> 部分并添加 language.c
-          if ($content -match '(<ItemGroup>[\s\S]*?<ClCompile Include="[^"]+\.c"[^>]*/>[\s\S]*?</ItemGroup>)') {
-              $itemGroup = $matches[1]
-              $newItemGroup = $itemGroup -replace '(</ItemGroup>)', '    <ClCompile Include="..\src\language.c" />`r`n  $1'
-              $content = $content -replace [regex]::Escape($itemGroup), $newItemGroup
-              
-              Set-Content -Path $vcxproj.FullName -Value $content -Encoding UTF8
-              Write-Host "已将 language.c 添加到项目文件"
+          # 检查是否还有未处理的 language 函数调用
+          if ($content -match 'language_get_string\s*\(') {
+              Write-Host "警告: 仍有 language_get_string 调用未处理"
           } else {
-              Write-Host "警告: 无法找到合适的位置添加文件"
+              Write-Host "✓ 所有 language_get_string 调用已处理"
+          }
+          
+          if ($content -match 'language_init\s*\(') {
+              Write-Host "警告: 仍有 language_init 调用未处理"
+          } else {
+              Write-Host "✓ 所有 language_init 调用已处理"
           }
 
       - name: 设置 MSBuild
@@ -117,8 +90,6 @@ jobs:
         id: locate-sln
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          
           $candidates = @(
             "vs2019\voidImageViewer.sln",
             "vs2005\voidImageViewer.sln",
@@ -149,47 +120,52 @@ jobs:
           $platform = "${{ matrix.platform }}"
           $config = "${{ matrix.configuration }}"
           
-          Write-Host "编译: $sln"
+          Write-Host "========================================="
+          Write-Host "开始编译"
+          Write-Host "========================================="
+          Write-Host "解决方案: $sln"
           Write-Host "平台: $platform"
           Write-Host "配置: $config"
+          Write-Host "========================================="
           
           msbuild "$sln" /m /p:Configuration=$config /p:Platform=$platform /v:minimal /t:Rebuild
           
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "编译失败，尝试清理后重新编译..."
-            msbuild "$sln" /t:Clean /p:Configuration=$config /p:Platform=$platform
-            msbuild "$sln" /m /p:Configuration=$config /p:Platform=$platform /v:detailed
-            
-            if ($LASTEXITCODE -ne 0) {
-              throw "编译失败，退出码: $LASTEXITCODE"
-            }
+            Write-Host "========================================="
+            Write-Host "编译失败，退出码: $LASTEXITCODE"
+            Write-Host "========================================="
+            throw "编译失败"
           }
           
+          Write-Host "========================================="
           Write-Host "编译成功！"
+          Write-Host "========================================="
 
       - name: 查找并收集编译输出
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          Write-Host "收集编译输出..."
           
           New-Item -ItemType Directory -Force -Path "output" | Out-Null
           
           $searchPaths = @(
-            "vs2019\${{ matrix.platform }}\${{ matrix.configuration }}\*.exe",
-            "vs2019\${{ matrix.platform }}\${{ matrix.configuration }}\*.dll",
-            "vs2005\${{ matrix.configuration }}\*.exe",
-            "vs2005\${{ matrix.configuration }}\*.dll",
-            "${{ matrix.configuration }}\*.exe",
-            "${{ matrix.configuration }}\*.dll"
+            "vs2019\${{ matrix.platform }}\${{ matrix.configuration }}",
+            "vs2005\${{ matrix.configuration }}",
+            "${{ matrix.configuration }}"
           )
           
           $foundFiles = $false
-          foreach ($path in $searchPaths) {
-            $files = Get-ChildItem -Path $path -ErrorAction SilentlyContinue
-            if ($files) {
-              foreach ($file in $files) {
+          foreach ($basePath in $searchPaths) {
+            if (Test-Path $basePath) {
+              Write-Host "检查目录: $basePath"
+              
+              $exeFiles = Get-ChildItem -Path $basePath -Filter "*.exe" -ErrorAction SilentlyContinue
+              $dllFiles = Get-ChildItem -Path $basePath -Filter "*.dll" -ErrorAction SilentlyContinue
+              
+              foreach ($file in ($exeFiles + $dllFiles)) {
                 Copy-Item $file.FullName "output\" -Force
-                Write-Host "已复制: $($file.Name) ($([math]::Round($file.Length/1KB, 2)) KB)"
+                $sizeKB = [math]::Round($file.Length/1KB, 2)
+                Write-Host "  ✓ 已复制: $($file.Name) ($sizeKB KB)"
                 $foundFiles = $true
               }
             }
@@ -201,11 +177,46 @@ jobs:
             Get-ChildItem -Recurse -Filter "*.exe" | ForEach-Object {
               Write-Host "  $($_.FullName)"
             }
+          } else {
+            Write-Host ""
+            Write-Host "输出目录内容:"
+            Get-ChildItem "output" | Format-Table Name, @{Label="Size(KB)";Expression={[math]::Round($_.Length/1KB,2)}}
           }
+
+      - name: 创建说明文件
+        shell: pwsh
+        run: |
+          $readme = @"
+voidImageViewer - GitHub Actions 构建版本 (源码修补版)
+
+构建信息:
+- 平台: ${{ matrix.platform }}
+- 配置: ${{ matrix.configuration }}  
+- 构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+- 构建编号: ${{ github.run_number }}
+- 提交: ${{ github.sha }}
+
+修补说明:
+本版本通过修改源代码移除了 language 函数调用，解决了链接错误。
+修改内容:
+1. 注释了 language_init() 调用
+2. 将所有 language_get_string() 替换为空字符串 L""
+3. 注释了 language.h 的引用
+
+影响:
+- 界面文本可能为空或使用硬编码的英文
+- 多语言支持已禁用
+- 核心图片查看功能应正常工作
+
+获取完整功能版本:
+https://github.com/voidtools/voidImageViewer/releases
+
+源代码:
+https://github.com/voidtools/voidImageViewer
+"@
           
-          Write-Host ""
-          Write-Host "输出目录内容:"
-          Get-ChildItem "output" -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Set-Content -Path "output\README.txt" -Value $readme -Encoding UTF8
+          Write-Host "已创建说明文件"
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
@@ -214,31 +225,12 @@ jobs:
           path: output/
           if-no-files-found: warn
 
-      - name: 创建说明文件
-        shell: pwsh
-        run: |
-          $readme = @"
-          voidImageViewer - GitHub Actions 构建版本
-          
-          构建信息:
-          - 平台: ${{ matrix.platform }}
-          - 配置: ${{ matrix.configuration }}
-          - 构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-          - 构建编号: ${{ github.run_number }}
-          
-          注意事项:
-          本版本使用了 language.c 补丁文件来解决链接错误。
-          这意味着：
-          1. 所有语言/本地化功能已被禁用
-          2. 部分菜单文本可能为空或显示异常
-          3. 核心图片查看功能应该正常工作
-          
-          如需完整功能版本，请访问:
-          https://github.com/voidtools/voidImageViewer/releases
-          
-          源代码:
-          https://github.com/voidtools/voidImageViewer
-          "@
-          
-          Set-Content -Path "output\README.txt" -Value $readme -Encoding UTF8
-          Write-Host "已创建说明文件"
+      - name: 上传修改后的源代码（用于调试）
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: patched-source-${{ matrix.platform }}
+          path: |
+            src/viv.c
+            src/viv.c.backup
+          if-no-files-found: warn
