@@ -9,7 +9,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: Checkout (with submodules)
@@ -96,39 +96,16 @@ jobs:
 
           Write-Host "Retargeted file count: $hit"
 
-      - name: Build x64 Release
+      - name: Generate nsis\version.nsh (CI, no git tags needed)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          msbuild "${{ steps.locate.outputs.sln }}" /m /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 
-      - name: Build Win32 Release
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          msbuild "${{ steps.locate.outputs.sln }}" /m /p:Configuration=Release /p:Platform=Win32 /verbosity:minimal
-
-      - name: Generate nsis\version.nsh (CI)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "Generating nsis\version.nsh ..."
-
-          $tag = (git describe --tags --abbrev=0 2>$null)
-          if (-not $tag) { $tag = "0.0.0.0" }
-          $tag = $tag.Trim()
-          if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
-
-          $parts = $tag.Split(".") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
-          while ($parts.Count -lt 4) { $parts += "0" }
-
-          $maj = [int]$parts[0]
-          $min = [int]$parts[1]
-          $pat = [int]$parts[2]
-          $bld = [int]$parts[3]
-
+          $maj = 0
+          $min = 0
+          $pat = 0
+          $bld = [int]"${{ github.run_number }}"
           $ver4 = "$maj.$min.$pat.$bld"
-          Write-Host "NSIS version: $ver4"
 
           $nsisDir = Join-Path $pwd "nsis"
           if (-not (Test-Path $nsisDir)) { throw "nsis directory not found" }
@@ -157,6 +134,12 @@ jobs:
           Write-Host "Wrote: $out"
           Get-Content $out
 
+      - name: Build x64 Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          msbuild "${{ steps.locate.outputs.sln }}" /m /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+
       - name: Build installer (NSIS)
         shell: pwsh
         run: |
@@ -178,7 +161,6 @@ jobs:
           }
           if (-not $mk) { throw "makensis.exe not found" }
 
-          Write-Host "Using makensis: $mk"
           & $mk /V2 /I (Join-Path $pwd "nsis") "$nsi"
 
       - name: Upload artifacts
