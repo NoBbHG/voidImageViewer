@@ -135,7 +135,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           msbuild "${{ steps.locate.outputs.sln }}" /m /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 
-      - name: Build installer (NSIS)
+      - name: Build installer (NSIS) via cmd.exe (stable argv)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -157,12 +157,17 @@ jobs:
           if (-not $mk) { throw "makensis.exe not found" }
 
           $includeDir = Join-Path $pwd "nsis"
+
           Write-Host "Using makensis: $mk"
           Write-Host "NSIS include dir: $includeDir"
           Write-Host "Running NSIS: $nsi"
 
-          # IMPORTANT: /I must be /I<path> (no space)
-          & $mk "/V2" "/I$includeDir" "$nsi"
+          # IMPORTANT:
+          # - use cmd.exe to avoid PowerShell/Win32 argv edge cases
+          # - /I must be /I"<path>" (no space between /I and the quote)
+          $cmdLine = """$mk"" /V2 /INPUTCHARSET UTF8 /I""$includeDir"" ""$nsi"""
+          Write-Host "CMD: $cmdLine"
+          cmd.exe /c $cmdLine
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
