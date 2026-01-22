@@ -36,24 +36,17 @@ jobs:
               throw "找不到 src\viv.c"
           }
           
-          # 读取源文件
           $content = Get-Content $vivPath -Raw -Encoding UTF8
           
-          # 备份原文件
           Copy-Item $vivPath "$vivPath.backup"
           Write-Host "已备份原文件"
           
-          # 替换 language_init() 调用为注释
           $content = $content -replace 'language_init\s*\(\s*\)\s*;', '// language_init(); // Disabled for GitHub Actions build'
           
-          # 替换所有 language_get_string 调用为空字符串 L""
-          # 匹配模式: language_get_string(任何内容)
           $content = $content -replace 'language_get_string\s*\([^)]+\)', 'L""'
           
-          # 注释掉可能的 language.h 引用
           $content = $content -replace '#include\s+[<"]language\.h[>"]', '// #include "language.h" // Disabled'
           
-          # 保存修改后的文件
           Set-Content -Path $vivPath -Value $content -Encoding UTF8
           
           Write-Host "源代码修补完成"
@@ -70,17 +63,16 @@ jobs:
           $vivPath = "src\viv.c"
           $content = Get-Content $vivPath -Raw
           
-          # 检查是否还有未处理的 language 函数调用
           if ($content -match 'language_get_string\s*\(') {
               Write-Host "警告: 仍有 language_get_string 调用未处理"
           } else {
-              Write-Host "✓ 所有 language_get_string 调用已处理"
+              Write-Host "OK - 所有 language_get_string 调用已处理"
           }
           
           if ($content -match 'language_init\s*\(') {
               Write-Host "警告: 仍有 language_init 调用未处理"
           } else {
-              Write-Host "✓ 所有 language_init 调用已处理"
+              Write-Host "OK - 所有 language_init 调用已处理"
           }
 
       - name: 设置 MSBuild
@@ -165,7 +157,7 @@ jobs:
               foreach ($file in ($exeFiles + $dllFiles)) {
                 Copy-Item $file.FullName "output\" -Force
                 $sizeKB = [math]::Round($file.Length/1KB, 2)
-                Write-Host "  ✓ 已复制: $($file.Name) ($sizeKB KB)"
+                Write-Host "  OK - 已复制: $($file.Name) ($sizeKB KB)"
                 $foundFiles = $true
               }
             }
@@ -180,40 +172,29 @@ jobs:
           } else {
             Write-Host ""
             Write-Host "输出目录内容:"
-            Get-ChildItem "output" | Format-Table Name, @{Label="Size(KB)";Expression={[math]::Round($_.Length/1KB,2)}}
+            Get-ChildItem "output" | ForEach-Object {
+              $sizeKB = [math]::Round($_.Length/1KB, 2)
+              Write-Host "  $($_.Name) - $sizeKB KB"
+            }
           }
 
       - name: 创建说明文件
         shell: pwsh
         run: |
-          $readme = @"
-voidImageViewer - GitHub Actions 构建版本 (源码修补版)
-
-构建信息:
-- 平台: ${{ matrix.platform }}
-- 配置: ${{ matrix.configuration }}  
-- 构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-- 构建编号: ${{ github.run_number }}
-- 提交: ${{ github.sha }}
-
-修补说明:
-本版本通过修改源代码移除了 language 函数调用，解决了链接错误。
-修改内容:
-1. 注释了 language_init() 调用
-2. 将所有 language_get_string() 替换为空字符串 L""
-3. 注释了 language.h 的引用
-
-影响:
-- 界面文本可能为空或使用硬编码的英文
-- 多语言支持已禁用
-- 核心图片查看功能应正常工作
-
-获取完整功能版本:
-https://github.com/voidtools/voidImageViewer/releases
-
-源代码:
-https://github.com/voidtools/voidImageViewer
-"@
+          $buildTime = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+          $readme = "voidImageViewer - GitHub Actions Build`n"
+          $readme += "`n"
+          $readme += "Platform: ${{ matrix.platform }}`n"
+          $readme += "Configuration: ${{ matrix.configuration }}`n"
+          $readme += "Build Time: $buildTime`n"
+          $readme += "Build Number: ${{ github.run_number }}`n"
+          $readme += "Commit: ${{ github.sha }}`n"
+          $readme += "`n"
+          $readme += "Note: This build has language functions disabled.`n"
+          $readme += "Some menu text may be empty.`n"
+          $readme += "`n"
+          $readme += "For official builds visit:`n"
+          $readme += "https://github.com/voidtools/voidImageViewer/releases`n"
           
           Set-Content -Path "output\README.txt" -Value $readme -Encoding UTF8
           Write-Host "已创建说明文件"
@@ -225,7 +206,7 @@ https://github.com/voidtools/voidImageViewer
           path: output/
           if-no-files-found: warn
 
-      - name: 上传修改后的源代码（用于调试）
+      - name: 上传修改后的源代码
         uses: actions/upload-artifact@v4
         if: always()
         with:
