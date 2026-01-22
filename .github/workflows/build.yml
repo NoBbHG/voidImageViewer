@@ -151,10 +151,12 @@ jobs:
             if (Test-Path $basePath) {
               Write-Host "检查目录: $basePath"
               
-              $exeFiles = Get-ChildItem -Path $basePath -Filter "*.exe" -ErrorAction SilentlyContinue
-              $dllFiles = Get-ChildItem -Path $basePath -Filter "*.dll" -ErrorAction SilentlyContinue
+              $exeFiles = @(Get-ChildItem -Path $basePath -Filter "*.exe" -ErrorAction SilentlyContinue)
+              $dllFiles = @(Get-ChildItem -Path $basePath -Filter "*.dll" -ErrorAction SilentlyContinue)
               
-              foreach ($file in ($exeFiles + $dllFiles)) {
+              $allFiles = $exeFiles + $dllFiles
+              
+              foreach ($file in $allFiles) {
                 Copy-Item $file.FullName "output\" -Force
                 $sizeKB = [math]::Round($file.Length/1KB, 2)
                 Write-Host "  OK - 已复制: $($file.Name) ($sizeKB KB)"
