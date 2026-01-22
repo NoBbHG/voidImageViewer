@@ -82,19 +82,14 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $files = Get-ChildItem -Recurse -Include *.vcxproj,*.props,*.targets
-          $hit = 0
-
           foreach ($f in $files) {
             $text = Get-Content $f.FullName -Raw
             if ($text -match '<PlatformToolset>\s*v145\s*</PlatformToolset>') {
               $new = $text -replace '<PlatformToolset>\s*v145\s*</PlatformToolset>', '<PlatformToolset>v143</PlatformToolset>'
               Set-Content -Path $f.FullName -Value $new -Encoding utf8
               Write-Host "Retargeted: $($f.FullName)"
-              $hit++
             }
           }
-
-          Write-Host "Retargeted file count: $hit"
 
       - name: Generate nsis\version.nsh (CI, no git tags needed)
         shell: pwsh
@@ -161,7 +156,13 @@ jobs:
           }
           if (-not $mk) { throw "makensis.exe not found" }
 
-          & $mk /V2 /I (Join-Path $pwd "nsis") "$nsi"
+          $includeDir = Join-Path $pwd "nsis"
+          Write-Host "Using makensis: $mk"
+          Write-Host "NSIS include dir: $includeDir"
+          Write-Host "Running NSIS: $nsi"
+
+          # IMPORTANT: /I must be /I<path> (no space)
+          & $mk "/V2" "/I$includeDir" "$nsi"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
