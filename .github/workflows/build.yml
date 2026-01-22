@@ -1,4 +1,4 @@
-name: Build voidImageViewer
+name: Build voidImageViewer (with language patch)
 
 on:
   workflow_dispatch:
@@ -24,6 +24,91 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      - name: 创建 language.c 补丁文件
+        shell: pwsh
+        run: |
+          Write-Host "创建 language.c 补丁文件以解决链接错误..."
+          
+          $languageC = @'
+          // Temporary language.c stub for GitHub Actions build
+          // This file provides empty implementations to resolve linker errors
+          
+          #include <windows.h>
+          
+          // Stub: Return empty string for all language requests
+          const wchar_t* language_get_string(int string_id)
+          {
+              return L"";
+          }
+          
+          // Stub: Do nothing for language initialization
+          void language_init(void)
+          {
+              // Language support disabled in this build
+          }
+          '@
+          
+          $srcDir = "src"
+          if (-not (Test-Path $srcDir)) {
+              throw "src 目录不存在"
+          }
+          
+          $languagePath = Join-Path $srcDir "language.c"
+          Set-Content -Path $languagePath -Value $languageC -Encoding UTF8
+          Write-Host "已创建: $languagePath"
+          
+          # 同时创建 language.h 头文件
+          $languageH = @'
+          // language.h - stub header
+          #ifndef LANGUAGE_H
+          #define LANGUAGE_H
+          
+          const wchar_t* language_get_string(int string_id);
+          void language_init(void);
+          
+          #endif
+          '@
+          
+          $headerPath = Join-Path $srcDir "language.h"
+          Set-Content -Path $headerPath -Value $languageH -Encoding UTF8
+          Write-Host "已创建: $headerPath"
+
+      - name: 将 language.c 添加到项目
+        shell: pwsh
+        run: |
+          Write-Host "将 language.c 添加到 vcxproj..."
+          
+          # 查找 .vcxproj 文件
+          $vcxproj = Get-ChildItem -Recurse -Filter "voidImageViewer.vcxproj" | Select-Object -First 1
+          
+          if (-not $vcxproj) {
+              Write-Host "警告: 未找到 vcxproj 文件，跳过此步骤"
+              exit 0
+          }
+          
+          Write-Host "找到项目文件: $($vcxproj.FullName)"
+          
+          # 读取项目文件
+          $content = Get-Content $vcxproj.FullName -Raw -Encoding UTF8
+          
+          # 检查是否已包含 language.c
+          if ($content -match 'language\.c') {
+              Write-Host "language.c 已在项目中"
+              exit 0
+          }
+          
+          # 查找 <ClCompile> 部分并添加 language.c
+          if ($content -match '(<ItemGroup>[\s\S]*?<ClCompile Include="[^"]+\.c"[^>]*/>[\s\S]*?</ItemGroup>)') {
+              $itemGroup = $matches[1]
+              $newItemGroup = $itemGroup -replace '(</ItemGroup>)', '    <ClCompile Include="..\src\language.c" />`r`n  $1'
+              $content = $content -replace [regex]::Escape($itemGroup), $newItemGroup
+              
+              Set-Content -Path $vcxproj.FullName -Value $content -Encoding UTF8
+              Write-Host "已将 language.c 添加到项目文件"
+          } else {
+              Write-Host "警告: 无法找到合适的位置添加文件"
+          }
 
       - name: 设置 MSBuild
         uses: microsoft/setup-msbuild@v1.1
@@ -71,11 +156,18 @@ jobs:
           msbuild "$sln" /m /p:Configuration=$config /p:Platform=$platform /v:minimal /t:Rebuild
           
           if ($LASTEXITCODE -ne 0) {
-            throw "编译失败，退出码: $LASTEXITCODE"
+            Write-Host "编译失败，尝试清理后重新编译..."
+            msbuild "$sln" /t:Clean /p:Configuration=$config /p:Platform=$platform
+            msbuild "$sln" /m /p:Configuration=$config /p:Platform=$platform /v:detailed
+            
+            if ($LASTEXITCODE -ne 0) {
+              throw "编译失败，退出码: $LASTEXITCODE"
+            }
           }
+          
+          Write-Host "编译成功！"
 
       - name: 查找并收集编译输出
-        id: collect-output
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -97,7 +189,7 @@ jobs:
             if ($files) {
               foreach ($file in $files) {
                 Copy-Item $file.FullName "output\" -Force
-                Write-Host "已复制: $($file.Name)"
+                Write-Host "已复制: $($file.Name) ($([math]::Round($file.Length/1KB, 2)) KB)"
                 $foundFiles = $true
               }
             }
@@ -105,8 +197,10 @@ jobs:
           
           if (-not $foundFiles) {
             Write-Host "警告: 未找到编译输出文件"
-            Write-Host "列出所有 .exe 文件:"
-            Get-ChildItem -Recurse -Filter "*.exe" | Select-Object FullName
+            Write-Host "搜索所有 .exe 文件:"
+            Get-ChildItem -Recurse -Filter "*.exe" | ForEach-Object {
+              Write-Host "  $($_.FullName)"
+            }
           }
           
           Write-Host ""
@@ -116,162 +210,35 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: voidImageViewer-${{ matrix.platform }}-${{ matrix.configuration }}
+          name: voidImageViewer-${{ matrix.platform }}-${{ matrix.configuration }}-patched
           path: output/
           if-no-files-found: warn
 
-  package:
-    needs: build
-    runs-on: windows-2019
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
-    
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: 下载编译产物 x86
-        uses: actions/download-artifact@v4
-        with:
-          name: voidImageViewer-Win32-Release
-          path: build/x86
-        continue-on-error: true
-
-      - name: 下载编译产物 x64
-        uses: actions/download-artifact@v4
-        with:
-          name: voidImageViewer-x64-Release
-          path: build/x64
-        continue-on-error: true
-
-      - name: 安装 NSIS
+      - name: 创建说明文件
         shell: pwsh
         run: |
-          Write-Host "安装 NSIS..."
-          choco install nsis -y --no-progress
-          Start-Sleep -Seconds 5
-
-      - name: 查找 NSIS 并添加到 PATH
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+          $readme = @"
+          voidImageViewer - GitHub Actions 构建版本
           
-          $candidates = @(
-            "C:\Program Files (x86)\NSIS",
-            "C:\Program Files\NSIS",
-            "C:\ProgramData\chocolatey\lib\nsis\tools",
-            "C:\tools\nsis"
-          )
+          构建信息:
+          - 平台: ${{ matrix.platform }}
+          - 配置: ${{ matrix.configuration }}
+          - 构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+          - 构建编号: ${{ github.run_number }}
           
-          $nsisPath = $null
-          foreach ($path in $candidates) {
-            if (Test-Path "$path\makensis.exe") {
-              $nsisPath = $path
-              Write-Host "找到 NSIS: $nsisPath"
-              break
-            }
-          }
+          注意事项:
+          本版本使用了 language.c 补丁文件来解决链接错误。
+          这意味着：
+          1. 所有语言/本地化功能已被禁用
+          2. 部分菜单文本可能为空或显示异常
+          3. 核心图片查看功能应该正常工作
           
-          if (-not $nsisPath) {
-            $found = Get-ChildItem -Path "C:\" -Recurse -ErrorAction SilentlyContinue -Filter "makensis.exe" | Select-Object -First 1
-            if ($found) {
-              $nsisPath = $found.DirectoryName
-              Write-Host "通过搜索找到 NSIS: $nsisPath"
-            }
-          }
+          如需完整功能版本，请访问:
+          https://github.com/voidtools/voidImageViewer/releases
           
-          if (-not $nsisPath) {
-            throw "未找到 NSIS makensis.exe"
-          }
-          
-          "PATH=$nsisPath;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          
-          & "$nsisPath\makensis.exe" /VERSION
-
-      - name: 检查 NSIS 脚本
-        shell: pwsh
-        run: |
-          $nsisScript = "nsis\installer.nsi"
-          
-          if (-not (Test-Path $nsisScript)) {
-            Write-Host "警告: 未找到 NSIS 脚本: $nsisScript"
-            Write-Host "列出 nsis 目录内容:"
-            Get-ChildItem "nsis" -ErrorAction SilentlyContinue | Format-Table Name
-            exit 0
-          }
-          
-          Write-Host "找到 NSIS 脚本: $nsisScript"
-
-      - name: 创建 version.nsh
-        shell: pwsh
-        run: |
-          $nsisDir = "nsis"
-          if (-not (Test-Path $nsisDir)) {
-            Write-Host "警告: nsis 目录不存在，跳过"
-            exit 0
-          }
-          
-          $version = "1.0.0.${{ github.run_number }}"
-          
-          $versionFile = Join-Path $nsisDir "version.nsh"
-          
-          if (Test-Path $versionFile) {
-            Write-Host "version.nsh 已存在，不覆盖"
-            Get-Content $versionFile
-            exit 0
-          }
-          
-          $content = @"
-          !define VERSION "$version"
-          !define VIV_VERSION "$version"
+          源代码:
+          https://github.com/voidtools/voidImageViewer
           "@
           
-          Set-Content -Path $versionFile -Value $content -Encoding utf8
-          Write-Host "已创建 version.nsh:"
-          Get-Content $versionFile
-
-      - name: 制作安装包
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $nsisScript = "nsis\installer.nsi"
-          
-          if (-not (Test-Path $nsisScript)) {
-            Write-Host "跳过: 未找到 NSIS 脚本"
-            exit 0
-          }
-          
-          Write-Host "制作安装包..."
-          
-          try {
-            makensis.exe /V2 /INPUTCHARSET UTF8 $nsisScript
-            Write-Host "安装包制作完成"
-          } catch {
-            Write-Host "警告: 安装包制作失败: $_"
-          }
-
-      - name: 收集安装包
-        shell: pwsh
-        run: |
-          Write-Host "查找生成的安装包..."
-          
-          $installers = Get-ChildItem -Recurse -Include "*.exe" -Exclude "voidImageViewer.exe" | Where-Object { $_.Directory.Name -eq "nsis" -or $_.Name -like "*Setup*" }
-          
-          if ($installers) {
-            New-Item -ItemType Directory -Force -Path "installers" | Out-Null
-            
-            foreach ($installer in $installers) {
-              Copy-Item $installer.FullName "installers\" -Force
-              Write-Host "找到安装包: $($installer.Name)"
-            }
-          } else {
-            Write-Host "未找到安装包"
-          }
-
-      - name: 上传安装包
-        uses: actions/upload-artifact@v4
-        with:
-          name: voidImageViewer-Installers
-          path: installers/
-          if-no-files-found: warn
+          Set-Content -Path "output\README.txt" -Value $readme -Encoding UTF8
+          Write-Host "已创建说明文件"
