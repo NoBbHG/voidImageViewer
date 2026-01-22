@@ -1,7 +1,7 @@
 name: Build voidImageViewer
 
 on:
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   push:
     branches: [ master, main ]
 
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2019  # 使用 Windows 2019，更稳定
+    runs-on: windows-2019
     timeout-minutes: 60
 
     strategy:
@@ -34,7 +34,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           
-          # 按优先级查找解决方案文件
           $candidates = @(
             "vs2019\voidImageViewer.sln",
             "vs2005\voidImageViewer.sln",
@@ -81,10 +80,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           
-          # 创建输出目录
           New-Item -ItemType Directory -Force -Path "output" | Out-Null
           
-          # 可能的输出路径
           $searchPaths = @(
             "vs2019\${{ matrix.platform }}\${{ matrix.configuration }}\*.exe",
             "vs2019\${{ matrix.platform }}\${{ matrix.configuration }}\*.dll",
@@ -112,8 +109,8 @@ jobs:
             Get-ChildItem -Recurse -Filter "*.exe" | Select-Object FullName
           }
           
-          # 列出输出目录内容
-          Write-Host "`n输出目录内容:"
+          Write-Host ""
+          Write-Host "输出目录内容:"
           Get-ChildItem "output" -ErrorAction SilentlyContinue | Format-Table Name, Length
 
       - name: 上传编译产物
@@ -123,7 +120,6 @@ jobs:
           path: output/
           if-no-files-found: warn
 
-  # 可选：制作安装包（仅在成功编译后）
   package:
     needs: build
     runs-on: windows-2019
@@ -135,14 +131,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: 下载编译产物 (x86)
+      - name: 下载编译产物 x86
         uses: actions/download-artifact@v4
         with:
           name: voidImageViewer-Win32-Release
           path: build/x86
         continue-on-error: true
 
-      - name: 下载编译产物 (x64)
+      - name: 下载编译产物 x64
         uses: actions/download-artifact@v4
         with:
           name: voidImageViewer-x64-Release
@@ -154,8 +150,6 @@ jobs:
         run: |
           Write-Host "安装 NSIS..."
           choco install nsis -y --no-progress
-          
-          # 等待安装完成
           Start-Sleep -Seconds 5
 
       - name: 查找 NSIS 并添加到 PATH
@@ -180,7 +174,6 @@ jobs:
           }
           
           if (-not $nsisPath) {
-            # 全局搜索
             $found = Get-ChildItem -Path "C:\" -Recurse -ErrorAction SilentlyContinue -Filter "makensis.exe" | Select-Object -First 1
             if ($found) {
               $nsisPath = $found.DirectoryName
@@ -192,10 +185,8 @@ jobs:
             throw "未找到 NSIS makensis.exe"
           }
           
-          # 添加到 PATH
           "PATH=$nsisPath;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          # 验证
           & "$nsisPath\makensis.exe" /VERSION
 
       - name: 检查 NSIS 脚本
@@ -212,7 +203,7 @@ jobs:
           
           Write-Host "找到 NSIS 脚本: $nsisScript"
 
-      - name: 创建 version.nsh（如果需要）
+      - name: 创建 version.nsh
         shell: pwsh
         run: |
           $nsisDir = "nsis"
@@ -221,30 +212,26 @@ jobs:
             exit 0
           }
           
-          # 生成版本号
           $version = "1.0.0.${{ github.run_number }}"
           
           $versionFile = Join-Path $nsisDir "version.nsh"
           
-          # 如果 version.nsh 已存在，不覆盖
           if (Test-Path $versionFile) {
             Write-Host "version.nsh 已存在，不覆盖"
             Get-Content $versionFile
             exit 0
           }
           
-          # 创建 version.nsh
           $content = @"
-; Auto-generated version file
-!define VERSION "$version"
-!define VIV_VERSION "$version"
-"@
+          !define VERSION "$version"
+          !define VIV_VERSION "$version"
+          "@
           
           Set-Content -Path $versionFile -Value $content -Encoding utf8
           Write-Host "已创建 version.nsh:"
           Get-Content $versionFile
 
-      - name: 制作安装包 (x86)
+      - name: 制作安装包
         shell: pwsh
         continue-on-error: true
         run: |
@@ -255,35 +242,13 @@ jobs:
             exit 0
           }
           
-          Write-Host "制作 x86 安装包..."
+          Write-Host "制作安装包..."
           
-          # 尝试制作安装包
           try {
             makensis.exe /V2 /INPUTCHARSET UTF8 $nsisScript
-            Write-Host "x86 安装包制作完成"
+            Write-Host "安装包制作完成"
           } catch {
-            Write-Host "警告: x86 安装包制作失败: $_"
-          }
-
-      - name: 制作安装包 (x64)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $nsisScript = "nsis\installer.nsi"
-          
-          if (-not (Test-Path $nsisScript)) {
-            Write-Host "跳过: 未找到 NSIS 脚本"
-            exit 0
-          }
-          
-          Write-Host "制作 x64 安装包..."
-          
-          # 尝试制作安装包（使用 x64 定义）
-          try {
-            makensis.exe /V2 /INPUTCHARSET UTF8 /Dx64 $nsisScript
-            Write-Host "x64 安装包制作完成"
-          } catch {
-            Write-Host "警告: x64 安装包制作失败: $_"
+            Write-Host "警告: 安装包制作失败: $_"
           }
 
       - name: 收集安装包
@@ -291,9 +256,7 @@ jobs:
         run: |
           Write-Host "查找生成的安装包..."
           
-          # 查找所有可能的安装包
-          $installers = Get-ChildItem -Recurse -Include "*.exe" -Exclude "voidImageViewer.exe" | 
-            Where-Object { $_.Directory.Name -eq "nsis" -or $_.Name -like "*Setup*" }
+          $installers = Get-ChildItem -Recurse -Include "*.exe" -Exclude "voidImageViewer.exe" | Where-Object { $_.Directory.Name -eq "nsis" -or $_.Name -like "*Setup*" }
           
           if ($installers) {
             New-Item -ItemType Directory -Force -Path "installers" | Out-Null
@@ -308,7 +271,6 @@ jobs:
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
-        if: hashFiles('installers/*.exe') != ''
         with:
           name: voidImageViewer-Installers
           path: installers/
